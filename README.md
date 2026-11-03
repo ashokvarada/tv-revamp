@@ -1,6 +1,6 @@
 # TV Revamp
 
-A cleaner, faster Home screen for Android TV and Google TV, in the style of Prime Video and Apple TV: your apps in one
+A smooth, uncluttered entertainment Home for Android TV and Google TV, with suggestions built in: your apps in one
 row, the newest shows on each of your streaming services behind them, a single Continue watching row across every
 app, and an Explore page of mood and genre rows. It's built on
 [cleanyourtv](https://github.com/Gathin23/cleanyourtv) by Gathin23, which also removes the bloat and ads from your TV
