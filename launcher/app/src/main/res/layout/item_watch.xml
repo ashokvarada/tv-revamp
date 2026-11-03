@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Local addition (LatestShows): a Continue watching card under the app row: the picture and a progress line.
+     Smaller than an app tile; it grows when focused. -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="96dp"
+    android:layout_height="54dp"
+    android:layout_marginEnd="22dp"
+    android:background="@drawable/watch_card_bg"
+    android:foreground="@drawable/watch_card_ring"
+    android:focusable="true"
+    android:clickable="true">
+
+    <ImageView
+        android:id="@+id/watchImage"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:importantForAccessibility="no" />
+
+    <!-- Only while the card has no picture. -->
+    <TextView
+        android:id="@+id/watchFallback"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:padding="10dp"
+        android:maxLines="3"
+        android:ellipsize="end"
+        android:textColor="#CCFFFFFF"
+        android:textSize="11sp"
+        android:fontFamily="@string/font_light"
+        android:importantForAccessibility="no" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="3dp"
+        android:layout_gravity="bottom"
+        android:background="#40FFFFFF" />
+
+    <View
+        android:id="@+id/watchProgress"
+        android:layout_width="0dp"
+        android:layout_height="3dp"
+        android:layout_gravity="bottom"
+        android:background="#FFBA0021" />
+</FrameLayout>

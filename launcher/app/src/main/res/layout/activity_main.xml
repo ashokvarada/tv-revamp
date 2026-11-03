@@ -23,6 +23,22 @@
         android:visibility="gone"
         android:importantForAccessibility="no" />
 
+    <!-- Local addition (LatestShows): the focused app's newest title from TMDB, via the companion "Latest" app,
+         darkened on the text side and at the bottom so the shelf and the dock stay readable. -->
+    <ImageView
+        android:id="@+id/showArt"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:alpha="0"
+        android:importantForAccessibility="no" />
+
+    <View
+        android:id="@+id/showScrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:alpha="0" />
+
     <!-- Ambient glow in the colour of the focused dock app. -->
     <View
         android:id="@+id/ambient"
@@ -127,11 +143,56 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textColor="#FFFFFFFF"
-            android:textSize="48sp"
+            android:textSize="28sp"
             android:fontFamily="@string/font_light"
             android:letterSpacing="-0.02"
             android:includeFontPadding="false"
+            android:maxWidth="760dp"
+            android:ellipsize="end"
             android:singleLine="true" />
+
+        <!-- Local addition (LatestShows): "Tamil · Netflix · ★ 7.8" under the title. -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_marginTop="10dp"
+            android:orientation="horizontal"
+            android:gravity="center_vertical">
+
+            <!-- A fixed height: a ★ in the line would otherwise make it taller and move the title. -->
+            <TextView
+                android:id="@+id/heroShow"
+                android:layout_width="wrap_content"
+                android:layout_height="22dp"
+                android:gravity="center_vertical"
+                android:singleLine="true"
+                android:ellipsize="end"
+                android:maxWidth="860dp"
+                android:textColor="#D9FFFFFF"
+                android:textSize="15sp"
+                android:fontFamily="@string/font_light"
+                android:visibility="gone" />
+
+        </LinearLayout>
+
+        <!-- Local addition (LatestShows): the gist, while the background has focus: the summary and Watch now. -->
+        <TextView
+            android:id="@+id/heroOverview"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="4dp"
+            android:layout_marginTop="8dp"
+            android:maxWidth="820dp"
+            android:maxLines="5"
+            android:minLines="5"
+            android:ellipsize="end"
+            android:lineSpacingMultiplier="1.1"
+            android:textColor="#C7FFFFFF"
+            android:textSize="13sp"
+            android:fontFamily="@string/font_light"
+            android:visibility="gone" />
+
 
         <!-- Cinematic shelf only: when the app was last opened, and the dock position dots. -->
         <TextView
@@ -155,6 +216,53 @@
             android:orientation="horizontal"
             android:visibility="gone" />
     </LinearLayout>
+
+    <!-- Local addition (LatestShows): one dot per title, the current one filling while its 5 s run, Netflix style.
+         Not part of the shelf: it stays in one place above the apps while the shelf's words change over it. -->
+    <com.gathin.tvhome.RunDots
+        android:id="@+id/recoDots"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="72dp"
+        android:visibility="invisible" />
+
+    <!-- Local addition (LatestShows): Continue watching, every app's together, under the app row (Prime Video
+         style), placed in code. Down from an app enters it, Up returns to the app. -->
+    <TextView
+        android:id="@+id/watchLabel"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="68dp"
+        android:text="@string/continue_watching"
+        android:textColor="#B3FFFFFF"
+        android:textSize="13sp"
+        android:fontFamily="@string/font_medium"
+        android:letterSpacing="0.04"
+        android:visibility="gone" />
+
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/watchRow"
+        android:layout_width="match_parent"
+        android:layout_height="96dp"
+        android:paddingStart="62dp"
+        android:paddingEnd="62dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:clipToPadding="false"
+        android:clipChildren="false"
+        android:visibility="gone" />
+
+    <!-- Local addition (LatestShows): the background as a focus target. Up from an app focuses it (it is focusable
+         only then), Left/Right slide through that app's titles, OK finds the title, Down returns to the app. -->
+    <View
+        android:id="@+id/recoStage"
+        android:layout_width="1dp"
+        android:layout_height="1dp"
+        android:focusable="false"
+        android:clickable="true"
+        android:longClickable="true"
+        android:defaultFocusHighlightEnabled="false"
+        android:importantForAccessibility="no" />
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -339,14 +447,12 @@
                     android:drawableStart="@drawable/ic_input"
                     android:nextFocusDown="@+id/grid" />
 
+                <!-- Local addition: pull the latest titles from TMDB now (the companion app fetches them). -->
                 <TextView
-                    android:id="@+id/btnWifi"
-                    style="@style/TopButton"
-                    android:maxWidth="180dp"
-                    android:singleLine="true"
-                    android:ellipsize="end"
-                    android:text="@string/wifi"
-                    android:drawableStart="@drawable/ic_wifi"
+                    android:id="@+id/btnRefresh"
+                    style="@style/TopButtonIcon"
+                    android:contentDescription="@string/refresh"
+                    android:drawableStart="@drawable/ic_refresh"
                     android:nextFocusDown="@+id/grid" />
 
                 <TextView
@@ -377,6 +483,17 @@
                     style="@style/TopButton"
                     android:text="@string/settings"
                     android:drawableStart="@drawable/ic_settings"
+                    android:nextFocusDown="@+id/grid" />
+
+                <!-- Local addition: last in the bar, so Right from it opens the side bar. -->
+                <TextView
+                    android:id="@+id/btnWifi"
+                    style="@style/TopButton"
+                    android:maxWidth="180dp"
+                    android:singleLine="true"
+                    android:ellipsize="end"
+                    android:text="@string/wifi"
+                    android:drawableStart="@drawable/ic_wifi"
                     android:nextFocusDown="@+id/grid" />
             </LinearLayout>
         </RelativeLayout>
@@ -411,4 +528,83 @@
         android:layout_height="10dp"
         android:alpha="0"
         android:importantForAccessibility="no" />
+
+    <!-- Behind the side bar while it is open (Prime Video style). -->
+    <View
+        android:id="@+id/railShade"
+        android:layout_width="320dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="@drawable/rail_shade"
+        android:alpha="0"
+        android:importantForAccessibility="no" />
+
+    <!-- Local addition: the left rail, the same as on Explore (com.tvlatest): Home (this screen) and Explore. Left from
+         the first app opens it. Slim enough to sit in the margin left of the apps. -->
+    <LinearLayout
+        android:id="@+id/rail"
+        android:clipChildren="false"
+        android:clipToPadding="false"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="10dp"
+        android:background="@drawable/rail_bg"
+        android:orientation="vertical"
+        android:padding="6dp">
+
+        <TextView
+            android:id="@+id/railHome"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:background="@drawable/rail_item"
+            android:drawableStart="@drawable/ic_rail_home"
+            android:drawablePadding="14dp"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:minWidth="44dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="18dp"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:fontFamily="@string/font_light"
+            android:contentDescription="Home" />
+
+        <TextView
+            android:id="@+id/railExplore"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/rail_item"
+            android:drawableStart="@drawable/ic_rail_explore"
+            android:drawablePadding="14dp"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:minWidth="44dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="18dp"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:fontFamily="@string/font_light"
+            android:contentDescription="Explore" />
+
+        <TextView
+            android:id="@+id/railPersonalize"
+            android:layout_width="wrap_content"
+            android:layout_height="44dp"
+            android:layout_marginTop="8dp"
+            android:background="@drawable/rail_item"
+            android:drawableStart="@drawable/ic_rail_personalize"
+            android:drawablePadding="14dp"
+            android:focusable="true"
+            android:gravity="center_vertical"
+            android:minWidth="44dp"
+            android:paddingStart="10dp"
+            android:paddingEnd="18dp"
+            android:textSize="15sp"
+            android:textStyle="bold"
+            android:fontFamily="@string/font_light"
+            android:contentDescription="Personalize" />
+    </LinearLayout>
+
 </FrameLayout>

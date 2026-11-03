@@ -29,6 +29,9 @@ public class GlassView extends View {
     /** glass_style rim or halo: no sheen and no fill, only the crisp rim (and, for halo, a lighter outer glow). */
     private boolean flat;
     private boolean halo;
+    /** Local addition (glass_style "bar"): no slab, rim or glow, only a short accent bar under the tile. */
+    private boolean bar;
+    private final Paint barPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public GlassView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -65,6 +68,8 @@ public class GlassView extends View {
     void setStyle(String style) {
         flat = Config.GLASS_RIM.equals(style) || Config.GLASS_HALO.equals(style);
         halo = Config.GLASS_HALO.equals(style);
+        bar = Config.GLASS_BAR.equals(style);
+        barPaint.setColor(Personal.DEFAULT_ACCENT);
         rim.setStrokeWidth((flat ? 2f : 1.5f) * density);
         invalidate();
     }
@@ -84,6 +89,12 @@ public class GlassView extends View {
     @Override
     protected void onDraw(Canvas canvas) {
         float inset = 6f * density;   // room for the glow
+        if (bar) {
+            float w = getWidth() * 0.3f, h = 4f * density, cx = getWidth() / 2f, bottom = getHeight() - 0.5f * density;
+            rect.set(cx - w / 2f, bottom - h, cx + w / 2f, bottom);
+            canvas.drawRoundRect(rect, h / 2f, h / 2f, barPaint);
+            return;
+        }
         rect.set(inset, inset, getWidth() - inset, getHeight() - inset);
 
         // Outer glow: thin rings across the inset, each a little fainter, so it fades out smoothly. Three wide
@@ -116,5 +127,11 @@ public class GlassView extends View {
         canvas.restore();
 
         canvas.drawRoundRect(rect, radius, radius, rim);
+    }
+
+    /** Local addition: the bar under the focused app, in the colour picked in Personalize. */
+    void setBarColor(int color) {
+        barPaint.setColor(color);
+        invalidate();
     }
 }

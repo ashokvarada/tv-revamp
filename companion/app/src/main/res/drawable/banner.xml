@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TV banner: a film strip with a play mark on near-black, drawn for this app. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp" android:height="180dp"
+    android:viewportWidth="320" android:viewportHeight="180">
+    <path android:fillColor="#FF0E0E12" android:pathData="M0,0h320v180h-320z" />
+    <path android:fillColor="#FF01B4E4" android:pathData="M0,0h320v180h-320z" android:fillAlpha="0.18" />
+    <path android:fillColor="#FF90CEA1" android:pathData="M40,40h240v100h-240z" android:fillAlpha="0.25" />
+    <path android:fillColor="#FFFFFFFF" android:pathData="M145,62l40,28l-40,28z" />
+    <path android:fillColor="#FFFFFFFF" android:fillAlpha="0.6"
+        android:pathData="M48,48h12v10h-12zM48,122h12v10h-12zM260,48h12v10h-12zM260,122h12v10h-12z" />
+</vector>

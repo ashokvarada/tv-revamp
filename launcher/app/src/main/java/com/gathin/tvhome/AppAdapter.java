@@ -153,8 +153,17 @@ public class AppAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
      * fit: the dock was pushed to the top and its title drew over the clock. With dock_row false there is no band
      * or title to make room for: the first row plus rows_below_dock rows fit under a small top margin.
      */
+    /** Local addition: the app tiles a little smaller than their cells allow (5 percent), for a lighter row. */
+    static final float ROW_SCALE = 0.95f;
+
     static int tileWidthPx(int innerWidthPx, int gridHeightPx, int columns, int rowsBelowDock, boolean dockTitle,
                            boolean dockRow, float density) {
+        return Math.round(fitTileWidthPx(innerWidthPx, gridHeightPx, columns, rowsBelowDock, dockTitle, dockRow, density)
+                * ROW_SCALE);
+    }
+
+    private static int fitTileWidthPx(int innerWidthPx, int gridHeightPx, int columns, int rowsBelowDock,
+                                      boolean dockTitle, boolean dockRow, float density) {
         int w = tileWidthPx(innerWidthPx, columns, density);
         if (gridHeightPx <= 0 || rowsBelowDock <= 0) return w;
         float reserved = (dockRow ? DOCK_EXTRA_DP + BOTTOM_ROOM_DP + (dockTitle ? TITLE_ROOM_DP : 0)

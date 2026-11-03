@@ -25,6 +25,14 @@
     <!-- Android 11+ package visibility: lets the launcher list the TV apps it shows as tiles, and the
          apps that declare a module card (docs/specs/card.md). -->
     <queries>
+        <!-- Local addition (LatestShows): the companion "Latest" app's read-only provider. -->
+        <provider android:authorities="com.tvlatest.latest" />
+        <!-- Local addition: the rail's Explore, in the companion app. -->
+        <package android:name="com.tvlatest" />
+        <!-- Local addition: OK on a recommendation opens Google TV's search for the title. -->
+        <intent>
+            <action android:name="android.search.action.GLOBAL_SEARCH" />
+        </intent>
         <!-- The standard settings handlers, so package visibility doesn't hide them and send the pills to a vendor fallback by mistake. -->
         <intent>
             <action android:name="android.settings.SETTINGS" />
@@ -187,6 +195,22 @@
 
         <!-- stock_home_redirect at boot: HomeKeyService opens this invisible activity once, so the screen behind
              it sends a window event when it closes (HomeKeyService.probeAtBoot). -->
+        <!-- Local addition (home_hold_switch): "Switch to Google TV home?" when Home is held. -->
+        <!-- Local addition: the side bar's Personalize screen; exported so Explore (com.tvlatest) can open it. -->
+        <activity
+            android:name=".PersonalizeActivity"
+            android:exported="true"
+            android:excludeFromRecents="true"
+            android:screenOrientation="landscape"
+            android:theme="@style/Theme.TvHome" />
+        <activity
+            android:name=".SwitchHomeActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
         <activity
             android:name=".ProbeActivity"
             android:exported="false"

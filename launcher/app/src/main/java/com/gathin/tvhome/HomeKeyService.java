@@ -76,6 +76,34 @@ public class HomeKeyService extends AccessibilityService {
     private long powerOnUntil;
     /** home_long_press_home: this service takes every Home press, held ones included. */
     private boolean homeLongPressHome;
+    /** Local addition (back_long_press_home): in another app, holding Back opens Home; a short press is handed on as
+     *  Back. For apps that never leave on Back (Netflix on this Google TV). */
+    private boolean backLongPressHome;
+    /** The package of the activity in front, from window changes, while back_long_press_home is on. */
+    private String activityInFront = "";
+    /** The held Back already opened Home, so its release does nothing. */
+    private boolean backWentHome;
+    /** Until this uptime, a Back key is the one this service handed on itself: let it through. */
+    private long handedOnBackUntil;
+    static final long BACK_HOLD_MS = 600;
+    private final Runnable backHome = () -> {
+        backWentHome = true;
+        goHome();
+    };
+    /** Local addition (home_hold_switch): holding Home switches between this launcher and the stock one. */
+    private boolean homeHoldSwitch;
+    static final long HOME_HOLD_SWITCH_MS = 900;
+    /** The held Home already switched, so its release does nothing. */
+    private boolean homeSwitched;
+    private final Runnable switchHome = () -> {
+        homeSwitched = true;
+        // Ask first (SwitchHomeActivity), which switches and opens the chosen home on Switch.
+        try {
+            startActivity(new Intent(this, SwitchHomeActivity.class).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (ActivityNotFoundException | SecurityException e) {
+            goHome();
+        }
+    };
     /** app_keys "front:" entries, and the package of the activity in front, from window changes while there are any. */
     private Map<Integer, String> frontAppKeys = Collections.emptyMap();
     private Map<Integer, String> frontAppScancodes = Collections.emptyMap();
@@ -196,6 +224,8 @@ public class HomeKeyService extends AccessibilityService {
         appScancodes = RemoteKeys.parseAppScancodes(config.appKeys);
         RemoteKeys.applyKeyFilter(this, config.keyFilter);
         homeLongPressHome = config.homeLongPressHome;
+        backLongPressHome = getResources().getBoolean(R.bool.back_long_press_home);
+        homeHoldSwitch = getResources().getBoolean(R.bool.home_hold_switch);
         frontAppKeys = RemoteKeys.parseFrontAppKeys(config.appKeys);
         frontAppScancodes = RemoteKeys.parseFrontAppScancodes(config.appKeys);
         boolean watchFront = !frontAppKeys.isEmpty() || !frontAppScancodes.isEmpty();
@@ -223,7 +253,7 @@ public class HomeKeyService extends AccessibilityService {
         }
         // home_key_service.xml subscribes to no events, so the redirects ask for window changes only when one is on.
         AccessibilityServiceInfo info = getServiceInfo();
-        if (info != null && (!stockHome.isEmpty() || !powerOnLiveTv.isEmpty() || watchFront)) {
+        if (info != null && (!stockHome.isEmpty() || !powerOnLiveTv.isEmpty() || watchFront || backLongPressHome)) {
             info.eventTypes |= AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED;
             setServiceInfo(info);
         }
@@ -260,6 +290,7 @@ public class HomeKeyService extends AccessibilityService {
             powerOnUntil = 0;
         }
         if (consumeVolumeKeys && VolumeKeys.handle(this, event)) return true;
+        if (backLongPressHome && event.getKeyCode() == KeyEvent.KEYCODE_BACK && holdBackForHome(event)) return true;
         // A scancode entry is more specific than any keycode, so it goes first.
         if (RemoteKeys.handle(this, event, inFront(appScancodes, frontAppScancodes, event.getScanCode()),
                 holdAppScancodes.get(event.getScanCode()))) return true;
@@ -280,6 +311,21 @@ public class HomeKeyService extends AccessibilityService {
                 holdAppKeys.get(event.getKeyCode()))) return true;
         // home_long_press_home: Android never sees the Home key, so a held press cannot turn into ALL_APPS.
         if (homeLongPressHome && event.getKeyCode() == KeyEvent.KEYCODE_HOME) {
+            // home_hold_switch: held long enough, Home switches home screens instead (switchHome).
+            if (homeHoldSwitch && !stockHomePackage.isEmpty()) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    if (event.getRepeatCount() == 0) {
+                        homeSwitched = false;
+                        handler.removeCallbacks(switchHome);
+                        handler.postDelayed(switchHome, HOME_HOLD_SWITCH_MS);
+                    }
+                    return true;
+                }
+                handler.removeCallbacks(switchHome);
+                if (!homeSwitched && !event.isCanceled()) goHome();
+                homeSwitched = false;
+                return true;
+            }
             if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) openHome();
             return true;
         }
@@ -289,6 +335,31 @@ public class HomeKeyService extends AccessibilityService {
         }
         if (event.getKeyCode() != KeyEvent.KEYCODE_ALL_APPS) return false;
         if (event.getAction() == KeyEvent.ACTION_UP && !event.isCanceled()) openHome();
+        return true;
+    }
+
+    /**
+     * back_long_press_home: takes Back while another app is in front. Held for BACK_HOLD_MS it opens Home; released
+     * sooner it is handed on as an ordinary Back (GLOBAL_ACTION_BACK), which this service then lets through.
+     */
+    private boolean holdBackForHome(KeyEvent event) {
+        long now = SystemClock.uptimeMillis();
+        if (now < handedOnBackUntil) return false;
+        if (activityInFront.isEmpty() || activityInFront.equals(getPackageName())) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN) {
+            if (event.getRepeatCount() == 0) {
+                backWentHome = false;
+                handler.removeCallbacks(backHome);
+                handler.postDelayed(backHome, BACK_HOLD_MS);
+            }
+            return true;
+        }
+        handler.removeCallbacks(backHome);
+        if (!backWentHome && !event.isCanceled()) {
+            handedOnBackUntil = now + 500;
+            performGlobalAction(GLOBAL_ACTION_BACK);
+        }
+        backWentHome = false;
         return true;
     }
 
@@ -314,6 +385,16 @@ public class HomeKeyService extends AccessibilityService {
                 // a dialog, panel or overlay: the app under it is still in front
             }
         }
+        // back_long_press_home: which app is in front (activities only; a dialog leaves its app in front).
+        if (backLongPressHome && event.getPackageName() != null && event.getClassName() != null) {
+            try {
+                ComponentName window = new ComponentName(event.getPackageName().toString(), event.getClassName().toString());
+                getPackageManager().getActivityInfo(window, 0);
+                activityInFront = window.getPackageName();
+            } catch (PackageManager.NameNotFoundException notAnActivity) {
+                // a dialog, panel or overlay
+            }
+        }
         // power_on_home: the firmware opened Live TV by itself at power-on, before anyone pressed a key.
         if (powerOnRedirect(powerOnLiveTv, event.getPackageName(), SystemClock.elapsedRealtime(), powerOnUntil)) {
             openHome();
@@ -321,7 +402,7 @@ public class HomeKeyService extends AccessibilityService {
         }
         // stock_home_redirect: the firmware turned the stock launcher back on and its home screen came up.
         CharSequence cls = event.getClassName();
-        if (!stockHome.isEmpty() && cls != null && stockHome.contains(cls.toString())) openHome();
+        if (!stockHome.isEmpty() && cls != null && stockHome.contains(cls.toString()) && !stockMode()) openHome();
     }
 
     /** How long power_on_home stays armed after the screen turns on without a reboot. */
@@ -378,7 +459,29 @@ public class HomeKeyService extends AccessibilityService {
      *  window event for it arrives (#1116). Once per boot, open ProbeActivity: when it closes, whatever was in
      *  front comes back and sends a window event, and onAccessibilityEvent covers it only if it is the stock home.
      *  An HDMI input or an app that the TV resumed at boot is left alone. */
+    /** home_hold_switch: true while the owner chose the stock home screen; kept across restarts. */
+    private boolean stockMode() {
+        return homeHoldSwitch && SwitchHomeActivity.stockChosen(this);
+    }
+
+    /** Home as chosen: this launcher, or the stock one while home_hold_switch has it. */
+    private void goHome() {
+        if (!stockMode()) {
+            openHome();
+            return;
+        }
+        Intent stock = new Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME).setPackage(stockHomePackage)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        try {
+            startActivity(stock);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            SwitchHomeActivity.setStockChosen(this, false);   // the stock home is gone: never leave the TV without one
+            openHome();
+        }
+    }
+
     private void probeAtBoot() {
+        if (stockMode()) return;   // the owner chose the stock home: leave it on screen at boot
         int boot = Settings.Global.getInt(getContentResolver(), Settings.Global.BOOT_COUNT, -1);
         SharedPreferences prefs = getSharedPreferences("boot", MODE_PRIVATE);
         if (!firstBindAfterBoot(boot, prefs.getInt("probe_boot", -1), SystemClock.elapsedRealtime())) return;

@@ -21,3 +21,9 @@ bench-results/
 *.aab
 launcher/hs_err_pid*.log
 launcher/replay_pid*.log
+
+# The companion app (TV Revamp): its build output and SDK path stay local.
+companion/.gradle/
+companion/build/
+companion/app/build/
+companion/local.properties

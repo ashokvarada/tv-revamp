@@ -75,6 +75,7 @@ import androidx.dynamicanimation.animation.FloatPropertyCompat;
 import androidx.dynamicanimation.animation.SpringAnimation;
 import androidx.dynamicanimation.animation.SpringForce;
 import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.RecyclerView;
 
 import java.io.File;
@@ -163,6 +164,58 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     /** config.xml cinematic_white_focus: the cinematic shelf keeps the white highlight. */
     private boolean cinematicWhiteFocus;
     private ImageView heroArt;
+    /** Local addition: the focused app's newest TMDB title (LatestShows), its backdrop and its line on the shelf. */
+    private LatestShows latest;
+    private ImageView showArt;
+    private View showScrim;
+    private TextView heroShow;
+    /** The title whose backdrop showArt holds or is loading ("package#rank"). */
+    private String showArtKey;
+    /** The background as a focus target: Up from an app enters it, Left/Right slide through its titles. */
+    private View recoStage;
+    /** "● ○ ○" under the title while the background has focus. */
+    private RunDots recoDots;
+    /** Local addition: the Continue watching strip under the app row (continue_watching_row). */
+    private boolean continueWatchingRow;
+    private RecyclerView watchRow;
+    private WatchAdapter watchAdapter;
+    private String watchPkg;
+    /** The app row sits WATCH_ROOM_DP higher while the focused app has Continue watching cards, low otherwise. */
+    private boolean dockLifted;
+    /** Local addition: the left rail (Home, Explore, Personalize), shared in look with the companion app's Explore. */
+    private TextView railHome, railExplore, railPersonalize;
+    /** Where focus was before the rail opened, so Right (or Back) returns there: an app, a card, a top button. */
+    private View railReturn;
+    /** Local addition: the colour picked in Personalize, and the name for the greeting, as this Home was built. */
+    private int accent;
+    private String personalName = "";
+    /** The open gist's summary and Watch now, under the title while the background has focus. */
+    private TextView heroOverview;
+    /** Up from the gist went to the top bar: Down from there comes back to the gist, not the app. */
+    private boolean topFromGist;
+    private TextView watchLabel;
+    /** The Continue watching card focus was last on, and whether focus was in that row when an app opened. */
+    private int watchIndex;
+    /** A removed Continue watching card's place: the next redraw focuses whatever card is there now. */
+    private int refocusWatch = -1;
+    private boolean resumeToWatch;
+    /** The bottom edge of the shelf above the apps: it grows upwards as its lines change. */
+    private float heroBottom = -1;
+    private float tileBottom = -1;
+    /** Continue watching sits below the screen's edge; Down into it scrolls the page up by this much (Prime style). */
+    private float pageShift;
+    private float watchLabelY = -1;
+    private View page;
+    private View btnRefresh;
+    private android.animation.ObjectAnimator refreshSpin;
+    private boolean refreshPending;
+    private final Runnable refreshTimeout = this::stopRefreshSpin;
+    /** A lift or drop is waiting for its layout; the cards wait with it. */
+    private boolean liftPending;
+    private final Runnable dropDock = () -> setDockLift(false);
+    /** The app whose titles are behind the screen, and which of them is showing. */
+    private String recoPkg;
+    private int recoIndex;
     /** config.xml cinematic_dots: false leaves the dock position dots out of the cinematic shelf. */
     private boolean heroDotsShown = true;
     /** The artwork's opacity behind the cinematic shelf (config.xml cinematic_art); 0 leaves it out. */
@@ -456,6 +509,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         density = getResources().getDisplayMetrics().density;
+        accent = Personal.accent(this);
+        personalName = Personal.name(this);
         // config.xml, overlaid by config.json from a pushed theme (see Config and tools/theme.sh).
         Config cfg = Config.load(this);
         homeAppKeys = RemoteKeys.parseAppKeys(cfg.appKeys);
@@ -510,6 +565,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         sky.setIntensity(cfg.skyIntensity);
         glass = findViewById(R.id.glass);
         glass.setStyle(cfg.glassStyle);
+        glass.setBarColor(0x00000000);   // local addition: the focused app gets a ring instead (ringCard)
         if (festive) glass.setAccent(festival.accentColor());
         ambient = findViewById(R.id.ambient);
         // The glow is one bitmap, so its alpha can be applied while drawing it. Otherwise every frame of
@@ -527,6 +583,25 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         heroMeta = findViewById(R.id.heroMeta);
         heroDots = findViewById(R.id.heroDots);
         heroArt = findViewById(R.id.heroArt);
+        showArt = findViewById(R.id.showArt);
+        showScrim = findViewById(R.id.showScrim);
+        heroShow = findViewById(R.id.heroShow);
+        heroOverview = findViewById(R.id.heroOverview);
+        watchLabel = findViewById(R.id.watchLabel);
+        showScrim.setBackground(homeScrim());
+        setUpVignette();
+        latest = new LatestShows(this, this::refreshLatest);
+        continueWatchingRow = getResources().getBoolean(R.bool.continue_watching_row);
+        watchRow = findViewById(R.id.watchRow);
+        watchRow.setLayoutManager(new LinearLayoutManager(this, RecyclerView.HORIZONTAL, false));
+        watchRow.setItemAnimator(null);
+        watchAdapter = new WatchAdapter();
+        watchRow.setAdapter(watchAdapter);
+        setUpRail();
+        recoStage = findViewById(R.id.recoStage);
+        recoDots = findViewById(R.id.recoDots);
+        recoDots.setAccent(accent);
+        setUpRecoStage();
         cinematic = cfg.cinematicHome;
         glowStyle = cfg.glowStyle;
         heroDotsShown = cfg.cinematicDots;
@@ -588,7 +663,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         lunar = cfg.lunarDate;
         lunarOffset = Lunar.offsetFor(cfg.lunarUtcOffset, Locale.getDefault());
         if (lunar) lunarDate.setVisibility(View.VISIBLE);
-        greetingName = cfg.greetingName;
+        greetingName = personalName.isEmpty() ? cfg.greetingName : personalName;
         if (cfg.dateBelowClock) moveDateBelowClock();
         if (cfg.dateBelowClock && cfg.iconOnlyButtons && !cfg.topMenu
                 && !getResources().getBoolean(R.bool.rtl_menu_bar)) {
@@ -719,6 +794,8 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             // A single row never shows the names under its tiles (the title above the row names the app), so the
             // 7dp gap and 22dp label item_app.xml keeps for them would only lift the row: sit it that much lower.
             if (singleRow && !cfg.alwaysShowNames) want += (int) (29 * density);
+            // Local addition: lift the row so the Continue watching strip fits under it.
+            if (singleRow && dockLifted) want -= (int) (WATCH_ROOM_DP * density);
             if (grid.getPaddingTop() != want) {
                 grid.setPadding(grid.getPaddingLeft(), want, grid.getPaddingRight(), grid.getPaddingBottom());
                 // A vertical grid parks the dock on the new padding line by scrolling (onTileFocused); a sideways
@@ -831,6 +908,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                     new Intent(this, LauncherSettingsActivity.class), LAUNCHER_SETTINGS_REQUEST);
             else open(systemIntent(Settings.ACTION_SETTINGS));
         });
+        btnRefresh = findViewById(R.id.btnRefresh);
+        btnRefresh.setOnClickListener(v -> refreshNow());
+        btnRefresh.setVisibility(latest.available() ? View.VISIBLE : View.GONE);
         btnReorder = findViewById(R.id.btnReorder);
         btnReorder.setOnClickListener(v -> toggleReorder());
         btnReorder.setVisibility(cfg.reorderButton ? View.VISIBLE : View.GONE);
@@ -897,16 +977,26 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
             if (keyCode == KeyEvent.KEYCODE_DPAD_UP) return true;
             if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                // Local addition: back to the gist when Up came from there.
+                if (topFromGist) {
+                    topFromGist = false;
+                    if (focusRecoStage()) return true;
+                }
                 // Back to the dock tile Up came from, not wherever the focus finder lands.
                 focusTile(singleRow ? lastFocused : lastFocused % COLUMNS);
                 return true;
             }
-            int firstButton = btnInputs.getVisibility() == View.VISIBLE ? R.id.btnInputs : firstTopButton().getId();
-            int leftButton = rtlMenuBar ? R.id.btnSettings : firstButton;
-            int rightButton = rtlMenuBar ? firstButton : R.id.btnSettings;
-            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) return v.getId() == leftButton;
-            return keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && v.getId() == rightButton;
+            // Local addition: either end of the bar opens the side bar (Right from the Wi-Fi icon, the last one).
+            List<View> shown = shownTopButtons();
+            boolean atEnd = keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? v == shown.get(0)
+                    : keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && v == shown.get(shown.size() - 1);
+            if (atEnd) {
+                railHome.requestFocus();
+                return true;
+            }
+            return false;
         };
+        btnRefresh.setOnKeyListener(pillKeys);
         btnInputs.setOnKeyListener(pillKeys);
         btnWifi.setOnKeyListener(pillKeys);
         btnVpn.setOnKeyListener(pillKeys);
@@ -924,11 +1014,17 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
         }
         if (festive) applyFestiveSkin((TextView) btnInputs, (TextView) btnSettings);
+        else paintTopButtons();
 
         // Hide the glass when focus leaves the tiles.
         getWindow().getDecorView().getViewTreeObserver().addOnGlobalFocusChangeListener((oldF, newF) -> {
             boolean onTile = newF != null && newF.getId() == R.id.card;
             if (!onTile) hideGlass();
+            if (!onTile && newF != recoStage) ringCard(null);   // the gist keeps its app's ring
+            if (isRail(newF) && oldF != null && !isRail(oldF)) railReturn = oldF;
+            // Local addition: the page scrolls down to Continue watching while a card has focus, back up otherwise.
+            if (newF != null && newF.getParent() == watchRow) scrollPage(true);
+            else if (newF != null && !isRail(newF)) scrollPage(false);
         });
 
         packageFilter.addAction(Intent.ACTION_PACKAGE_ADDED);
@@ -1051,6 +1147,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (openLibraryIfAsked(intent)) return;
         if (openInputsIfAsked(intent)) return;
         if (intent == null || !intent.hasCategory(Intent.CATEGORY_HOME)) return;
+        resumeToWatch = false;
         if (gameDay != null && !stopped) gameDay.read();
         grid.scrollToPosition(0);
         lastFocused = 0;
@@ -1095,7 +1192,21 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             recreate();
             return;
         }
+        // Local addition: a colour picked in Personalize rebuilds Home in it; a new name only changes the greeting.
+        if (Personal.accent(this) != accent) {
+            recreate();
+            return;
+        }
+        if (!Personal.name(this).equals(personalName)) {
+            personalName = Personal.name(this);
+            greetingName = personalName.isEmpty() ? Config.load(this).greetingName : personalName;
+        }
         restartIdleClock();
+        latest.refresh(this::refreshLatest);
+        if (resumeToWatch) {
+            resumeToWatch = false;
+            watchRow.postDelayed(this::focusWatching, 300);
+        }
         promptsPaused = false;
         if (grid.getAdapter() == null) grid.setAdapter(adapter);   // dropped by onTrimMemory
         switch (tileRefresh.onResume(packagesChangedSinceRebuild())) {
@@ -1299,6 +1410,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     protected void onPause() {
         super.onPause();
         resumed = false;
+        stopRecoRotation();
         // No UP reaches a paused Home, so a vendor-key hold it saw go down would still open its app later.
         // Only Home's own share is dropped: a key service that saw the same DOWN keeps its hold.
         RemoteKeys.release(this);
@@ -1353,6 +1465,12 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         grid.getRecycledViewPool().clear();
         heroArtCache.clear();
         heroArtKey = null;
+        latest.trim();
+        showArt.setImageDrawable(null);
+        showArt.setAlpha(0f);
+        showScrim.setAlpha(0f);
+        showArtKey = null;
+        recoPkg = null;
         wallpaperPlayer.releaseForMemoryPressure();
         tileRefresh.invalidate();
     }
@@ -1375,6 +1493,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         RemoteKeys.release(this);
         cancelHoldOk();
         if (gameDay != null) gameDay.shutdown();
+        latest.close();
         unregisterReceiver(packageReceiver);
         if (openOnStartOnWake) unregisterReceiver(wakeReceiver);
         wallpaperPlayer.close();
@@ -1793,6 +1912,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     @Override
     public void onTileFocused(int position, View card) {
+        ringCard(card);
         lastFocused = position;
         lastFocusedKey = adapter.keyAt(position);
         // Focus restored before the first layout (cold start): the tile has no size yet, and the glass
@@ -1866,8 +1986,13 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 if (!animations || reducedMotion) grid.scrollBy(0, dy);
                 else grid.smoothScrollBy(0, dy);
             }
-            showHero(position, scroll ? r.top - dy : r.top);
+            showLatest(position, true);
+            // Local addition: Continue watching runs under the apps, Prime Video style; the shelf sits above them.
+            float tileTop = scroll ? r.top - dy : r.top;
+            showWatchRow(tileTop + r.height());
+            showHero(position, tileTop);
         } else {
+            showLatest(position, false);
             // Below the dock (or in a plain grid) the glow follows the tile without the big name; letting it
             // fade out left the grid on plain black.
             showGlowOnly(position);
@@ -1902,9 +2027,16 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
     // ---- top shelf -------------------------------------------------------------------------------
 
     private void showHero(int position, float dockTopInRoot) {
-        String label = adapter.labelAt(position);
+        String label = heroTitleFor(position);
         int color = adapter.ambientColorAt(position);
-        float y = dockTopInRoot - 14 * density - 26 * density - hero.getHeight();
+        // Local addition: the slideshow dots stand just above the apps, fixed; the shelf stacks on top of them.
+        heroBottom = dockTopInRoot - 14 * density - 26 * density;
+        placeDots();
+        float y = heroY();
+        // The shelf's lines come and go per app, so place it again once it has its new height.
+        hero.post(() -> {
+            if (heroShown && !heroMorphing) hero.setY(heroY());
+        });
         boolean changed = !label.contentEquals(heroName.getText());
         if (cinematic && heroArtAlpha > 0f) showHeroArt(position);
 
@@ -1939,13 +2071,9 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
             }
             heroShown = true;
         } else if (changed) {
-            if (advancedEffects) hero.animate().cancel();
-            hero.animate().alpha(0f).translationX(-12 * density).setDuration(120).withEndAction(() -> {
-                fillHero(position, label);
-                hero.setY(y);
-                hero.setTranslationX(12 * density);
-                hero.animate().alpha(1f).translationX(0f).setDuration(200).start();
-            }).start();
+            // Local addition: only the words change over; the block and the slideshow dots stay where they are.
+            hero.setY(y);
+            swapText(() -> fillHero(position, label));
             if (ambientGlow && advancedEffects) {
                 transitionAmbient(color);
             } else if (ambientGlow && color != ambientColor && glowSnap) {
@@ -1959,7 +2087,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
                 }).start();
             }
         } else {
-            hero.setY(y);
+            if (!heroMorphing) hero.setY(y);   // back from the gist: morphHero is gliding it there
             // onPause cancels the fade-ins, and a second Home during one lands on the same tile, which starts none:
             // finish them, or the shelf and the glow stay dim until focus moves to another app.
             if (hero.getAlpha() < 1f) hero.animate().alpha(1f).setDuration(260).start();
@@ -1971,7 +2099,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
 
     /** The shelf's text for this dock app: its name and, on the cinematic shelf, "Last opened" and the dots. */
     private void fillHero(int position, String label) {
-        heroName.setText(label);
+        setHeroTitle(label);
         if (!cinematic) return;
         updateHeroMeta(position);
         updateHeroDots(position);
@@ -1993,7 +2121,7 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         heroArt.forceHasOverlappingRendering(false);
         if (scrimPercent <= 0) return;   // cinematic_scrim 0: no scrim at all
         View scrim = findViewById(R.id.heroScrim);
-        Drawable shade = scrimDrawable();
+        Drawable shade = homeScrim();
         // On the bitmap's paint, not the view: a view's alpha would draw the full screen through an offscreen buffer.
         shade.setAlpha(scrimPercent * 255 / 100);
         scrim.setBackground(shade);
@@ -2004,18 +2132,24 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
      * Darkens the side the shelf's text is on and the lower part of the screen, so the name, the dock and
      * the grid stay readable over the artwork. One small bitmap stretched over the screen, like the glow.
      */
-    private Drawable scrimDrawable() {
+    private Drawable homeScrim() {
         int w = 480, h = 270;
         Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(bmp);
         boolean rtl = getResources().getBoolean(R.bool.rtl_menu_bar);
         Paint paint = new Paint();
+        // Local addition: the picture lives in the top right; the text side, the clock and everything from the apps
+        // down sit on clean black, with a faint wash of the theme colour behind the apps and Continue watching.
         paint.setShader(new LinearGradient(rtl ? w : 0, 0, rtl ? 0 : w, 0,
-                new int[]{0xD1060406, 0x59060406, 0x00060406}, new float[]{0f, 0.42f, 0.7f}, Shader.TileMode.CLAMP));
+                new int[]{0xF2000000, 0xA6000000, 0x26000000, 0x00000000}, new float[]{0f, 0.3f, 0.55f, 0.75f},
+                Shader.TileMode.CLAMP));
         canvas.drawRect(0, 0, w, h, paint);
         paint.setShader(new LinearGradient(0, 0, 0, h,
-                new int[]{0x00060406, 0x00060406, 0xDB060406, 0xFF060406}, new float[]{0f, 0.28f, 0.58f, 0.76f},
-                Shader.TileMode.CLAMP));
+                new int[]{0x99000000, 0x00000000, 0x00000000, 0xE6000000, 0xFF000000},
+                new float[]{0f, 0.2f, 0.36f, 0.56f, 0.66f}, Shader.TileMode.CLAMP));
+        canvas.drawRect(0, 0, w, h, paint);
+        paint.setShader(new RadialGradient(w * 0.18f, h * 1.05f, w * 0.75f,
+                new int[]{(accent & 0x00FFFFFF) | 0x1A000000, 0x00000000}, null, Shader.TileMode.CLAMP));
         canvas.drawRect(0, 0, w, h, paint);
         BitmapDrawable scrim = new BitmapDrawable(getResources(), bmp);
         scrim.setGravity(Gravity.FILL);
@@ -2212,13 +2346,1061 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         }).start();
     }
 
+    // ---- latest shows (local addition) ------------------------------------------------------------
+
+    /** How long each recommendation stays behind a focused app before the next one. */
+    private static final long RECO_ROTATE_MS = 5000;
+    /** The backdrop's full opacity: a little under 1 so bright artwork doesn't wash out the clock and the pills. */
+    private static final float SHOW_ART_ALPHA = 0.82f;
+
+    private final Runnable rotateReco = () -> {
+        if (recoPkg == null || !resumed || !grid.hasFocus()) return;
+        List<LatestShows.Show> list = latest.list(recoPkg);
+        if (list.size() < 2) return;
+        recoIndex = (recoIndex + 1) % list.size();
+        showReco(list.get(recoIndex), 0);
+        scheduleRecoRotation();
+    };
+
+    private void scheduleRecoRotation() {
+        handler.removeCallbacks(rotateReco);
+        if (resumed && recoPkg != null && latest.list(recoPkg).size() > 1) {
+            handler.postDelayed(rotateReco, RECO_ROTATE_MS);
+            recoDots.run(RECO_ROTATE_MS);   // the current dot fills in step with the timer
+        }
+    }
+
+    private void stopRecoRotation() {
+        handler.removeCallbacks(rotateReco);
+        recoDots.stop();
+    }
+
+    /** New data from the companion app: after Refresh, a wipe crosses the whole screen and uncovers it. */
+    private void refreshLatest() {
+        if (refreshPending) {
+            stopRefreshSpin();
+            wipe(this::redrawLatest);
+            return;
+        }
+        redrawLatest();
+    }
+
+    private View wipePanel;
+    /** The wipe panel's width in screens: its black middle (7/11 of it) must be wider than the screen. */
+    private static final float WIPE_WIDTH = 1.65f;
+
+    /**
+     * Refresh's hand-over: a black panel with a soft edge in the theme colour sweeps in from the left until it covers
+     * the whole screen, the new titles are put in behind it, and it carries on off to the right, uncovering them. It
+     * is an overlay of its own, so nothing on the page is moved or reset by it.
+     */
+    private void wipe(Runnable swap) {
+        if (!animations || reducedMotion) {
+            swap.run();
+            return;
+        }
+        int w = root.getWidth();
+        if (wipePanel == null) {
+            wipePanel = new View(this);
+            // Evenly spaced stops: a soft coloured edge on each side (2/11 each) and solid black between (7/11).
+            int glow = (accent & 0x00FFFFFF) | 0x99000000, k = 0xFF000000;
+            GradientDrawable edge = new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT, new int[]{
+                    0x00000000, glow, k, k, k, k, k, k, k, k, glow, 0x00000000});
+            wipePanel.setBackground(edge);
+            wipePanel.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+            root.addView(wipePanel, new FrameLayout.LayoutParams((int) (w * WIPE_WIDTH),
+                    ViewGroup.LayoutParams.MATCH_PARENT));
+        }
+        wipePanel.bringToFront();
+        wipePanel.animate().cancel();
+        wipePanel.setVisibility(View.VISIBLE);
+        float panel = w * WIPE_WIDTH;
+        wipePanel.setTranslationX(-panel);
+        // Covered: the black part (from 2/11 of the panel) starts at the screen's left edge.
+        wipePanel.animate().translationX(-panel * 2f / 11f).setDuration(420)
+                .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
+                .withEndAction(() -> {
+                    swap.run();
+                    // A moment for the new picture to load behind the panel, then on across and away.
+                    wipePanel.animate().translationX(w).setStartDelay(260).setDuration(560)
+                            .setInterpolator(new android.view.animation.AccelerateDecelerateInterpolator())
+                            .withEndAction(() -> {
+                                wipePanel.setVisibility(View.GONE);
+                                wipePanel.animate().setStartDelay(0);
+                            }).start();
+                }).start();
+    }
+
+    /** Redraws for whatever has focus now: an app, a card or the background. */
+    private void redrawLatest() {
+        showArtKey = null;
+        // Local addition: still in the gist (after removing a title, say): stay there, on the title that took the
+        // removed one's place, or on the last one.
+        if (recoStage.hasFocus()) {
+            List<LatestShows.Show> list = latest.list(recoPkg);
+            if (tileBottom >= 0) showWatchRow(tileBottom);
+            if (list.isEmpty()) {
+                focusTile(lastFocused);
+                return;
+            }
+            recoIndex = Math.min(recoIndex, list.size() - 1);
+            showReco(list.get(recoIndex), 0);
+            return;
+        }
+        recoPkg = null;
+        if (tileBottom >= 0) showWatchRow(tileBottom);
+        // A Continue watching card was removed: focus the card that slid into its place (or the new last one).
+        if (refocusWatch >= 0) {
+            int at = refocusWatch;
+            refocusWatch = -1;
+            if (watchAdapter.getItemCount() == 0) {
+                focusTile(lastFocused);
+                return;
+            }
+            watchIndex = Math.min(at, watchAdapter.getItemCount() - 1);
+            watchRow.post(this::focusWatching);
+            return;
+        }
+        View f = getCurrentFocus();
+        if (f != null && f.getParent() == watchRow) {
+            int pos = watchRow.getChildAdapterPosition(f);
+            if (pos >= 0 && pos < watchAdapter.getItemCount()) showWatchHero(watchAdapter.items.get(pos));
+            return;
+        }
+        if (lastFocused < 0 || lastFocused >= adapter.appCount() || !glassShown) return;
+        RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(lastFocused);
+        View card = vh == null ? null : vh.itemView.findViewById(R.id.card);
+        if (card != null && card.isFocused()) onTileFocused(lastFocused, card);
+    }
+
+    /**
+     * The focused app's newest titles behind the screen, moving on every RECO_ROTATE_MS while the app keeps focus.
+     * Up from the app steps into the background itself (recoStage), the gist: Left and Right slide through the titles.
+     */
+    private void showLatest(int position, boolean inDock) {
+        String pkg = adapter.packageAt(position);
+        List<LatestShows.Show> list = latest.list(pkg);
+        if (list.isEmpty()) {
+            recoPkg = null;
+            stopRecoRotation();
+            // Hidden but keeping their room, so the title stands at the same height over every app.
+            recoDots.setVisibility(View.INVISIBLE);
+            heroShow.setText("");
+            heroShow.setVisibility(View.INVISIBLE);
+            showGist(false);
+            showArtKey = null;
+            fadeLatest(0f, 250);
+            return;
+        }
+        if (!pkg.equals(recoPkg)) {
+            recoPkg = pkg;
+            recoIndex = 0;
+        }
+        recoIndex = Math.min(recoIndex, list.size() - 1);
+        heroShow.setVisibility(inDock ? View.VISIBLE : View.INVISIBLE);
+        showReco(list.get(recoIndex), 0);
+        scheduleRecoRotation();
+    }
+
+    /** The shelf's big line: the title behind the screen, or the app's own name when it has none. */
+    private String heroTitleFor(int position) {
+        List<LatestShows.Show> list = latest.list(adapter.packageAt(position));
+        if (list.isEmpty()) return adapter.labelAt(position);
+        return list.get(Math.min(recoIndex, list.size() - 1)).title;
+    }
+
+    /**
+     * The title as large as fits on one line (28 sp down to 20 sp, the same in the gist); a longer one ends in "...".
+     * One line always, so the shelf has the same height, and moves the same way, for every app.
+     */
+    private void setHeroTitle(String title) {
+        TextPaint paint = new TextPaint(heroName.getPaint());
+        float width = heroName.getMaxWidth() > 0 ? heroName.getMaxWidth() : 760 * density;
+        float sp = 28f;   // the same in the gist, so moving in and out never resizes the title
+        float scaled = getResources().getDisplayMetrics().scaledDensity;
+        while (sp > 20f) {
+            paint.setTextSize(sp * scaled);
+            if (paint.measureText(title) <= width) break;
+            sp -= 2f;
+        }
+        heroName.setTextSize(TypedValue.COMPLEX_UNIT_SP, sp);
+        heroName.setText(title);
+        anchorHero();
+    }
+
+    /**
+     * The shelf grows upwards as its lines come and go: keep its bottom edge where it is, above the apps. The gist sits
+     * a little lower, over the dimmed apps' margin, so its extra lines stay clear of the clock.
+     */
+    private void anchorHero() {
+        if (heroBottom < 0) return;
+        hero.post(() -> {
+            if (heroShown && !heroMorphing) hero.setY(heroY());
+        });
+    }
+
+    /** "Tamil  ·  Netflix  ·  ★ 7.8": the language, where to watch it and TMDB's rating. */
+    private String metaLine(LatestShows.Show show) {
+        StringBuilder m = new StringBuilder();
+        if (show.language != null && !show.language.isEmpty()) m.append(show.language);
+        String where = show.services == null || show.services.isEmpty() ? appLabel(show.pkg) : show.services;
+        if (!where.isEmpty()) m.append(m.length() > 0 ? "  ·  " : "").append(where);
+        if (show.rating != null && !show.rating.isEmpty()) m.append(m.length() > 0 ? "  ·  " : "").append("★ ").append(show.rating);
+        return m.toString();
+    }
+
+    private String appLabel(String pkg) {
+        try {
+            return getPackageManager().getApplicationLabel(getPackageManager().getApplicationInfo(pkg, 0)).toString();
+        } catch (PackageManager.NameNotFoundException e) {
+            return "";
+        }
+    }
+
+    /**
+     * One title behind the screen and its lines on the shelf: the title, sized to fit, and "language · where ·
+     * rating". While the background has focus (the gist) the summary and Watch now show under them.
+     * slide: 0 crossfades, +1 / -1 slides the new picture in from the right / left.
+     */
+    private void showReco(LatestShows.Show show, int slide) {
+        Runnable words = () -> {
+            setHeroTitle(show.title);
+            heroShow.setText(metaLine(show));
+            heroShow.setVisibility(View.VISIBLE);
+            heroOverview.setText(show.overview == null ? "" : show.overview);
+        };
+        if (show.title.contentEquals(heroName.getText())) words.run();
+        else swapText(words);
+        showGist(recoStage.hasFocus());
+        int count = latest.list(show.pkg).size();
+        recoDots.set(count, show.rank);
+        recoDots.setVisibility(count > 1 ? View.VISIBLE : View.INVISIBLE);   // in the gist too; its room kept either way
+        anchorHero();
+        String key = show.pkg + "#" + show.rank;
+        if (key.equals(showArtKey)) {
+            if (showArt.getDrawable() != null) fadeLatest(1f, 300);
+            return;
+        }
+        showArtKey = key;
+        latest.backdrop(show, (s, bitmap) -> swapArt(key, bitmap, slide));
+    }
+
+    /** The background picture's hand-over: a crossfade, or a short slide when browsing by hand. */
+    private void swapArt(String key, Bitmap bitmap, int slide) {
+        if (!key.equals(showArtKey) || isDestroyed()) return;
+        showArt.animate().cancel();
+        showArt.setTranslationX(0f);
+        if (!animations || reducedMotion || showArt.getAlpha() == 0f) {
+            showArt.setImageBitmap(bitmap);
+            fadeLatest(1f, 400);
+            return;
+        }
+        float shift = 80 * density * slide;
+        showArt.animate().alpha(0.1f).translationX(-shift).setDuration(slide != 0 ? 140 : 160).withEndAction(() -> {
+            showArt.setImageBitmap(bitmap);
+            showArt.setTranslationX(shift);
+            showArt.setScaleX(artZoom);
+            showArt.setScaleY(artZoom);
+            showArt.animate().alpha(SHOW_ART_ALPHA).translationX(0f).setDuration(slide != 0 ? 260 : 420).start();
+            showScrim.animate().alpha(1f).setDuration(260).start();
+        }).start();
+    }
+
+    /**
+     * The gist's extra lines: the summary, always five lines tall (room for nearly every TMDB summary, blank when
+     * there is none), so the title stands at one height in every gist. OK plays; there is no button.
+     */
+    private void showGist(boolean open) {
+        heroOverview.setVisibility(open ? View.VISIBLE : View.GONE);
+    }
+
+    /** One pace for everything that moves between an app and its gist: the shelf, the dimming, the zoom. */
+    private static final int GIST_MS = 420;
+
+    /** The app wearing the ring: the focused one, or the one the open gist belongs to. */
+    private View litCard;
+
+    /**
+     * The gist opens: the app the titles belong to eases back to its resting size and keeps a ring in the theme
+     * colour (the glass goes with focus); the row itself stays as it is.
+     */
+    private void shrinkRow() {
+        RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(lastFocused);
+        View card = vh == null ? null : vh.itemView.findViewById(R.id.card);
+        if (card == null) return;
+        long ms = animations && !reducedMotion ? GIST_MS : 0;
+        card.animate().cancel();
+        card.animate().scaleX(1f).scaleY(1f).setDuration(ms)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f)).start();
+        ringCard(card);
+    }
+
+    /** The gist closes: nothing to undo; the app gets focus back with its ring still on. */
+    private void restoreRow() {
+    }
+
+    /**
+     * The highlight of an app: a rectangle in the theme colour round the tile, the same on the row and in the gist.
+     * null takes it off whichever app has it.
+     */
+    private void ringCard(View card) {
+        if (card == litCard) return;
+        if (litCard != null) litCard.setForeground(null);
+        litCard = card;
+        if (card == null) return;
+        GradientDrawable ring = new GradientDrawable();
+        ring.setCornerRadius(AppAdapter.cornerRadius(card.getWidth(), density));
+        ring.setStroke(Math.round(2.5f * density), accent);
+        card.setForeground(ring);
+    }
+
+    /** Word changes waiting for the fade-out under way; applied together, in order, so the newest wins. */
+    private final List<Runnable> pendingWords = new ArrayList<>();
+
+    /**
+     * Changes the shelf's words with a short crossfade (out to the left, in from the right) and leaves everything else
+     * still: the slideshow dots, the block's place, the picture. Straight away when animations are off or nothing shows.
+     */
+    private void swapText(Runnable change) {
+        if (!animations || reducedMotion || !heroShown || heroMorphing) {
+            change.run();
+            return;
+        }
+        boolean running = !pendingWords.isEmpty();
+        pendingWords.add(change);
+        if (running) return;   // the fade-out under way applies these too
+        View[] words = {heroName, heroShow, heroOverview};
+        for (int k = 0; k < words.length; k++) {
+            View v = words[k];
+            v.animate().cancel();
+            android.view.ViewPropertyAnimator out = v.animate().alpha(0f).translationX(-10 * density).setDuration(110);
+            if (k == 0) out.withEndAction(() -> {
+                List<Runnable> changes = new ArrayList<>(pendingWords);
+                pendingWords.clear();
+                for (Runnable c : changes) c.run();
+                for (View w : words) {
+                    w.setTranslationX(10 * density);
+                    w.animate().alpha(1f).translationX(0f).setDuration(220)
+                            .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+                }
+            });
+            out.start();
+        }
+    }
+
+    /** True while the shelf glides between an app and its gist: nothing else may move it then. */
+    private boolean heroMorphing;
+
+    /**
+     * Applies the change, then lets the shelf glide from where it was to its new place in one movement, while the
+     * gist's summary and Watch now fade in (they simply go when leaving). The title keeps its size throughout.
+     */
+    private void morphHero(Runnable change) {
+        if (!animations || reducedMotion || !heroShown) {
+            change.run();
+            return;
+        }
+        float from = hero.getY();
+        change.run();
+        heroMorphing = true;
+        for (View v : new View[]{heroOverview}) {
+            if (v.getVisibility() != View.VISIBLE) continue;
+            v.setAlpha(0f);
+            v.animate().alpha(1f).setStartDelay(GIST_MS / 3).setDuration(GIST_MS).start();
+        }
+        hero.post(() -> {
+            float to = heroY();
+            hero.animate().cancel();
+            hero.setAlpha(1f);
+            hero.setY(from);
+            hero.animate().y(to).setDuration(GIST_MS)
+                    .setInterpolator(new android.view.animation.DecelerateInterpolator(1.6f))
+                    .withEndAction(() -> heroMorphing = false).start();
+        });
+    }
+
+    /** The picture's zoom: 1 behind the apps, closer while the gist has focus. */
+    private static final float GIST_ZOOM = 1.08f;
+    private float artZoom = 1f;
+    /** Dark edges round the picture: full behind the apps, faint in the gist, so zooming in also opens it up. */
+    private View vignette;
+    private static final float VIGNETTE_OUT = 1f, VIGNETTE_IN = 0.1f;
+
+    /** One small radial bitmap stretched over the screen, like the scrim: clear in the middle, dark at the edges. */
+    private void setUpVignette() {
+        int w = 320, h = 180;
+        Bitmap bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888);
+        Paint paint = new Paint();
+        paint.setShader(new RadialGradient(w * 0.62f, h * 0.4f, w * 0.62f,
+                new int[]{0x00000000, 0x00000000, 0xA6000000, 0xF5000000}, new float[]{0f, 0.32f, 0.72f, 1f},
+                Shader.TileMode.CLAMP));
+        new Canvas(bmp).drawRect(0, 0, w, h, paint);
+        BitmapDrawable d = new BitmapDrawable(getResources(), bmp);
+        d.setGravity(Gravity.FILL);
+        vignette = new View(this);
+        vignette.setBackground(d);
+        vignette.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO);
+        vignette.forceHasOverlappingRendering(false);
+        root.addView(vignette, root.indexOfChild(showArt) + 1,
+                new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+    }
+
+    /**
+     * Zooms the background picture in (the gist) or back out (an app), slowly, about the picture's right side, with
+     * its dark edges fading as it comes closer and returning as it goes back.
+     */
+    private void zoomArt(float to) {
+        artZoom = to;
+        showArt.setPivotX(showArt.getWidth() * 0.7f);
+        showArt.setPivotY(showArt.getHeight() * 0.35f);
+        float edges = to > 1f ? VIGNETTE_IN : VIGNETTE_OUT;   // zoomed in: light edges; zoomed out: dark
+        if (!animations || reducedMotion) {
+            showArt.setScaleX(to);
+            showArt.setScaleY(to);
+            vignette.setAlpha(edges);
+            return;
+        }
+        showArt.animate().scaleX(to).scaleY(to).setDuration(GIST_MS + 180)
+                .setInterpolator(new android.view.animation.DecelerateInterpolator()).start();
+        vignette.animate().alpha(edges).setDuration(GIST_MS + 180).start();
+    }
+
+    private void fadeLatest(float to, int ms) {
+        showArt.animate().cancel();
+        showScrim.animate().cancel();
+        showArt.setTranslationX(0f);
+        zoomArt(artZoom);   // the cancel above stopped a zoom on its way
+        if (!animations || reducedMotion) {
+            showArt.setAlpha(to * SHOW_ART_ALPHA);
+            showScrim.setAlpha(to);
+            return;
+        }
+        showArt.animate().alpha(to * SHOW_ART_ALPHA).setDuration(ms).start();
+        showScrim.animate().alpha(to).setDuration(ms).start();
+    }
+
+    /** Up from an app: the background takes focus and its gist opens; false when the app has no titles. */
+    private boolean focusRecoStage() {
+        if (recoPkg == null || latest.list(recoPkg).isEmpty()) return false;
+        recoStage.setFocusable(true);
+        recoStage.requestFocus();
+        return true;
+    }
+
+    /** The background's own focus: the apps step back, the gist opens in place, rotation pauses. */
+    private void setUpRecoStage() {
+        recoStage.setOnFocusChangeListener((v, has) -> {
+            // Prime Video style: the apps stay bright and the app these titles belong to keeps its highlight;
+            // only the Continue watching peek below steps back.
+            float dim = has ? 0.5f : 1f;
+            for (View d : new View[]{watchRow, watchLabel}) {
+                if (animations && !reducedMotion) d.animate().alpha(dim).setDuration(GIST_MS).start();
+                else d.setAlpha(dim);
+            }
+            if (has) shrinkRow();
+            else restoreRow();
+            zoomArt(has ? GIST_ZOOM : 1f);   // closer on the picture in the gist, back out on the app
+            if (has) stopRecoRotation();
+            else recoStage.setFocusable(false);   // only Up from an app enters it, never a focus search
+            // The shelf changes size here (the title shrinks, the summary and Watch now come and go): dissolve it,
+            // change it, and let it rise back in at its new place, instead of jumping.
+            morphHero(() -> {
+                List<LatestShows.Show> list = latest.list(recoPkg);
+                if (!list.isEmpty()) showReco(list.get(Math.min(recoIndex, list.size() - 1)), 0);
+                else showGist(false);
+            });
+        });
+        recoStage.setOnKeyListener((v, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            List<LatestShows.Show> list = latest.list(recoPkg);
+            switch (keyCode) {
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                case KeyEvent.KEYCODE_BACK:
+                    focusTile(lastFocused);   // back to the app these titles belong to
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    topFromGist = true;
+                    firstTopButton().requestFocus();
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                    boolean next = (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) != rtlAppGrid;
+                    int at = Math.min(recoIndex, list.size() - 1);
+                    if (!next && at <= 0) {
+                        railHome.requestFocus();   // before the first title: the side bar (Right comes back here)
+                        return true;
+                    }
+                    if (next && at >= list.size() - 1) return true;   // the last title: nothing further
+                    recoIndex = at + (next ? 1 : -1);
+                    showReco(list.get(recoIndex), next ? 1 : -1);
+                    return true;
+                default:
+                    return false;
+            }
+        });
+        // OK is Watch now. Hold OK removes the title for good.
+        recoStage.setOnClickListener(v -> {
+            List<LatestShows.Show> list = latest.list(recoPkg);
+            if (!list.isEmpty()) openReco(list.get(Math.min(recoIndex, list.size() - 1)));
+        });
+        recoStage.setOnLongClickListener(v -> {
+            List<LatestShows.Show> list = latest.list(recoPkg);
+            if (list.isEmpty()) return true;
+            LatestShows.Show show = list.get(Math.min(recoIndex, list.size() - 1));
+            confirmHide(show.title, show.key, null);   // the gist stays open on the next title
+            return true;
+        });
+    }
+
+    /**
+     * Watch now, the fast way when there is one (Google TV's search goes through Gemini and is slow):
+     * 1. the title is in Continue watching: its own link, straight into the app;
+     * 2. the app's own search link takes the words (YouTube, Prime Video; the others tested ignore them);
+     * 3. otherwise Google TV's search for "<title> <app>".
+     */
+    private void openReco(LatestShows.Show show) {
+        String want = LatestShows.norm(show.title);
+        for (LatestShows.Watching w : latest.allWatching()) {
+            if (LatestShows.norm(w.title).equals(want) && w.pkg.equals(show.pkg)) {
+                openWatching(w);
+                return;
+            }
+        }
+        Intent own = appSearch(show.pkg, show.title);
+        if (own != null) {
+            try {
+                startActivity(own.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+                return;
+            } catch (ActivityNotFoundException | SecurityException ignored) {
+                // Fall through to Google TV's search.
+            }
+        }
+        String app = appLabel(show.pkg);
+        Intent search = new Intent("android.search.action.GLOBAL_SEARCH")
+                .putExtra(android.app.SearchManager.QUERY, app.isEmpty() ? show.title : show.title + " " + app)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(search);
+            return;
+        } catch (ActivityNotFoundException | SecurityException ignored) {
+            // No search on this TV: open the app instead.
+        }
+        Intent open = getPackageManager().getLeanbackLaunchIntentForPackage(show.pkg);
+        if (open == null) open = getPackageManager().getLaunchIntentForPackage(show.pkg);
+        if (open == null) return;
+        try {
+            startActivity(open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (ActivityNotFoundException | SecurityException ignored) {
+            Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * The app's own search for the title, for the apps whose links take search words (tested on the Google TV
+     * Streamer, November 2026); null for the rest. Prime Video asks "Who's watching?" first when it was closed.
+     */
+    private static Intent appSearch(String pkg, String title) {
+        String url;
+        switch (pkg) {
+            case "com.google.android.youtube.tv":
+                url = "https://www.youtube.com/results?search_query=";
+                break;
+            case "com.amazon.amazonvideo.livingroom":
+                url = "https://app.primevideo.com/search?phrase=";
+                break;
+            default:
+                return null;
+        }
+        return new Intent(Intent.ACTION_VIEW, Uri.parse(url + Uri.encode(title))).setPackage(pkg);
+    }
+
+    /** Hold OK on a title or a card: "Remove?", and once removed it never comes back (the companion app keeps the list). */
+    private void confirmHide(String title, String key, Runnable after) {
+        if (key == null || key.isEmpty()) return;
+        new android.app.AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle("Remove “" + title + "”?")
+                .setMessage("It won't be shown here again.")
+                .setPositiveButton("Remove", (d, w) -> {
+                    latest.hide(key);
+                    if (after != null) after.run();
+                })
+                .setNegativeButton(android.R.string.cancel, null)
+                .show()
+                // Cancel first: a held OK that lands here must not remove anything.
+                .getButton(android.content.DialogInterface.BUTTON_NEGATIVE).requestFocus();
+    }
+
+    // ---- refresh (local addition) -----------------------------------------------------------------
+
+    /** Refresh in the top bar: the companion app fetches from TMDB now; the icon turns until the new data lands. */
+    private void refreshNow() {
+        if (!latest.requestRefresh()) {
+            Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        refreshPending = true;
+        if (refreshSpin == null) {
+            refreshSpin = android.animation.ObjectAnimator.ofFloat(btnRefresh, "rotation", 0f, 360f);
+            refreshSpin.setDuration(900);
+            refreshSpin.setRepeatCount(ValueAnimator.INFINITE);
+            refreshSpin.setInterpolator(new android.view.animation.LinearInterpolator());
+        }
+        if (!refreshSpin.isRunning()) refreshSpin.start();
+        handler.removeCallbacks(refreshTimeout);
+        handler.postDelayed(refreshTimeout, 60_000);
+    }
+
+    private void stopRefreshSpin() {
+        handler.removeCallbacks(refreshTimeout);
+        refreshPending = false;
+        if (refreshSpin != null) refreshSpin.cancel();
+        btnRefresh.animate().rotation(0f).setDuration(200).start();
+    }
+
+    /** The top buttons in the Personalize colour: a pill of it on focus, the icon black on a light colour. */
+    private void paintTopButtons() {
+        ViewGroup bar = findViewById(R.id.topButtons);
+        ColorStateList ink = Personal.ink(accent);
+        for (int i = 0; i < bar.getChildCount(); i++) {
+            if (!(bar.getChildAt(i) instanceof TextView)) continue;
+            TextView b = (TextView) bar.getChildAt(i);
+            if (topAppButtons.contains(b)) continue;   // app logos keep their own look
+            b.setBackground(Personal.pill(accent, density));
+            b.setTextColor(ink);
+            b.setCompoundDrawableTintList(ink);
+        }
+    }
+
+    /** The top bar's buttons that are on screen, left to right. */
+    private List<View> shownTopButtons() {
+        ViewGroup bar = findViewById(R.id.topButtons);
+        List<View> out = new ArrayList<>();
+        for (int i = 0; i < bar.getChildCount(); i++) {
+            View b = bar.getChildAt(i);
+            if (b.getVisibility() == View.VISIBLE && b.isFocusable()) out.add(b);
+        }
+        if (out.isEmpty()) out.add(findViewById(R.id.btnSettings));
+        return out;
+    }
+
+    // ---- left rail (local addition) --------------------------------------------------------------
+
+    /** Home (this screen), Explore and Personalize: icons on the edge, names sliding in on focus, no boxes. */
+    private void setUpRail() {
+        railHome = findViewById(R.id.railHome);
+        railExplore = findViewById(R.id.railExplore);
+        railPersonalize = findViewById(R.id.railPersonalize);
+        View.OnFocusChangeListener names = (v, has) -> handler.post(this::updateRailNames);
+        railHome.setOnFocusChangeListener(names);
+        railExplore.setOnFocusChangeListener(names);
+        railPersonalize.setOnFocusChangeListener(names);
+        railHome.setOnClickListener(v -> returnFromRail());
+        railExplore.setOnClickListener(v -> openExplore());
+        railPersonalize.setOnClickListener(v -> startActivity(new Intent(this, PersonalizeActivity.class)));
+        View.OnKeyListener keys = (v, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            switch (keyCode) {
+                case KeyEvent.KEYCODE_DPAD_RIGHT:
+                case KeyEvent.KEYCODE_BACK:
+                    returnFromRail();
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_LEFT:
+                    return true;
+                case KeyEvent.KEYCODE_DPAD_UP:
+                    return v == railHome;
+                case KeyEvent.KEYCODE_DPAD_DOWN:
+                    return v == railPersonalize;
+                default:
+                    return false;
+            }
+        };
+        railHome.setOnKeyListener(keys);
+        railExplore.setOnKeyListener(keys);
+        railPersonalize.setOnKeyListener(keys);
+        // Explore lives in the companion app: without it, no Explore.
+        railExplore.setVisibility(getPackageManager().resolveActivity(exploreIntent(), 0) != null
+                ? View.VISIBLE : View.GONE);
+        updateRailNames();
+    }
+
+    private boolean isRail(View v) {
+        return v != null && (v == railHome || v == railExplore || v == railPersonalize);
+    }
+
+    /** Back where focus was before the rail: the app, the Continue watching card or the top button. */
+    private void returnFromRail() {
+        View back = railReturn;
+        railReturn = null;
+        if (back == recoStage) {   // the gist turns unfocusable once left, so it is reopened rather than refocused
+            if (!focusRecoStage()) focusTile(lastFocused);
+            return;
+        }
+        if (back != null && back.isAttachedToWindow() && back.isShown() && back.isFocusable()) {
+            back.requestFocus();
+            return;
+        }
+        focusTile(lastFocused);
+    }
+
+    /** Prime Video style: icons alone on the edge; on focus a shade slides in and the names appear. */
+    private void updateRailNames() {
+        boolean open = railHome.hasFocus() || railExplore.hasFocus() || railPersonalize.hasFocus();
+        View shade = findViewById(R.id.railShade);
+        shade.animate().alpha(open ? 1f : 0f).setDuration(180).start();
+        if (heroShown) hero.animate().alpha(open ? 0.25f : 1f).setDuration(180).start();
+        if (recoDots != null) recoDots.animate().alpha(open ? 0.25f : 1f).setDuration(180).start();   // set up later
+        setRailItem(railHome, open ? "Home" : "", true);
+        setRailItem(railExplore, open ? "Explore" : "", false);
+        setRailItem(railPersonalize, open ? "Personalize" : "", false);
+    }
+
+    /** No boxes: a focused item's icon and name take the Personalize colour; this screen's item is white, others grey. */
+    private void setRailItem(TextView v, String name, boolean current) {
+        v.setText(name);
+        int color = v.isFocused() ? accent : current ? 0xFFFFFFFF : 0x80FFFFFF;
+        v.setTextColor(color);
+        v.setCompoundDrawableTintList(ColorStateList.valueOf(color));
+    }
+
+    private Intent exploreIntent() {
+        return new Intent(Intent.ACTION_MAIN).setClassName("com.tvlatest", "com.tvlatest.LatestActivity");
+    }
+
+    private void openExplore() {
+        try {
+            startActivity(exploreIntent().addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (ActivityNotFoundException | SecurityException e) {
+            Toast.makeText(this, R.string.not_available, Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    // ---- continue watching (local addition) -------------------------------------------------------
+
+    /** Room the row of apps gives up, under it, for the Continue watching row (continue_watching_row). */
+    static final int WATCH_ROOM_DP = 124;
+
+    /** The room the dots take under the shelf: their height and the gap above them. */
+    private float dotsRoom() {
+        return recoDots.getMeasuredHeight() + 16 * density;
+    }
+
+    /** The shelf's top: it ends just above the dots, the same in the gist (it grows upwards there). */
+    private float heroY() {
+        return heroBottom - dotsRoom() - hero.getHeight() - pageShift;
+    }
+
+    /** The dots' one place: their bottom on the shelf's old bottom line, above the apps; only the page scroll moves them. */
+    private void placeDots() {
+        if (heroBottom < 0) return;
+        recoDots.animate().cancel();
+        recoDots.setY(heroBottom - recoDots.getMeasuredHeight() - pageShift);
+    }
+
+    /**
+     * Down into Continue watching: the clock, the top bar, the shelf and the apps slide up together until the row is
+     * on screen; anywhere else they slide back. The background picture stays.
+     */
+    private void scrollPage(boolean down) {
+        if (page == null) page = (View) grid.getParent().getParent();
+        float target = 0;
+        if (down && watchLabelY >= 0) {
+            float rowBottom = watchLabelY + 18 * density + watchRow.getHeight();
+            target = Math.max(0, rowBottom + 30 * density - root.getHeight());
+        }
+        if (target == pageShift) return;
+        pageShift = target;
+        long ms = animations && !reducedMotion ? 280 : 0;
+        page.animate().translationY(-target).setDuration(ms).start();
+        watchLabel.animate().y(watchLabelY - target).setDuration(ms).start();
+        watchRow.animate().y(watchLabelY + 18 * density - target).setDuration(ms).start();
+        if (heroShown && heroBottom >= 0) hero.animate().y(heroY()).setDuration(ms).start();
+        if (heroBottom >= 0) {
+            recoDots.animate().y(heroBottom - recoDots.getMeasuredHeight() - target).setDuration(ms).start();
+        }
+    }
+
+    /**
+     * Continue watching from every app in one row under the apps, newest first, one card per series (the companion
+     * app keeps only a series' latest episode). The apps move up to make room while there are any cards.
+     */
+    private void showWatchRow(float appsBottomInRoot) {
+        tileBottom = appsBottomInRoot;
+        List<LatestShows.Watching> list = continueWatchingRow ? recentWatching() : Collections.emptyList();
+        if (list.isEmpty()) {
+            watchRow.setVisibility(View.GONE);
+            watchLabel.setVisibility(View.GONE);
+            watchLabelY = -1;
+            setDockLift(false);
+            return;
+        }
+        if (!watchAdapter.same(list)) {
+            watchAdapter.setItems(list);
+            watchIndex = Math.min(watchIndex, list.size() - 1);
+        }
+        // The apps stay low; the row waits just past the screen's edge, its name peeking in (scrollPage brings it up).
+        setDockLift(false);
+        if (liftPending) return;   // placed once the apps are back down
+        float labelY = appsBottomInRoot + 30 * density;   // layout position: the page's scroll is applied below
+        watchLabelY = labelY;
+        watchLabel.setY(labelY - pageShift);
+        watchRow.setY(labelY + 18 * density - pageShift);
+        float to = recoStage.hasFocus() ? 0.35f : 1f;   // the background dims it like the apps
+        for (View v : new View[]{watchLabel, watchRow}) {
+            if (v.getVisibility() != View.VISIBLE && animations && !reducedMotion) {
+                v.setAlpha(0f);
+                v.setVisibility(View.VISIBLE);
+                v.animate().alpha(to).setDuration(220).start();
+            } else {
+                v.setVisibility(View.VISIBLE);
+            }
+        }
+    }
+
+    /**
+     * Continue watching within the Personalize limit (7 days unless changed): a title last watched before it is left
+     * out, and so is one whose app never says when it was watched, since it can't be shown to be recent.
+     */
+    private List<LatestShows.Watching> recentWatching() {
+        int days = Personal.watchDays(this);
+        List<LatestShows.Watching> all = latest.allWatching();
+        if (days <= 0) return all;
+        long since = System.currentTimeMillis() - days * 24L * 60 * 60 * 1000;
+        List<LatestShows.Watching> out = new ArrayList<>();
+        for (LatestShows.Watching w : all) if (w.engaged >= since) out.add(w);
+        return out;
+    }
+
+    /** Moves the app row up (room for the cards) or back down, sliding, then fits the glass and the shelf again. */
+    private void setDockLift(boolean lift) {
+        if (lift == dockLifted) return;
+        dockLifted = lift;
+        liftPending = true;
+        int room = (int) (WATCH_ROOM_DP * density);
+        int pad = grid.getPaddingTop() + (lift ? -room : room);
+        grid.setPadding(grid.getPaddingLeft(), pad, grid.getPaddingRight(), grid.getPaddingBottom());
+        if (animations && !reducedMotion) {
+            grid.animate().cancel();
+            grid.setTranslationY(lift ? room : -room);
+            grid.animate().translationY(0f).setDuration(240).start();
+        }
+        grid.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
+            @Override
+            public void onGlobalLayout() {
+                grid.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                liftPending = false;
+                int pos = Math.max(0, Math.min(lastFocused, adapter.appCount() - 1));
+                RecyclerView.ViewHolder vh = grid.findViewHolderForAdapterPosition(pos);
+                View card = vh == null ? null : vh.itemView.findViewById(R.id.card);
+                if (card == null) return;
+                if (card.isFocused()) {
+                    onTileFocused(pos, card);
+                    return;
+                }
+                // Focus is elsewhere (a card, the rail): still put the row under the apps' new place.
+                Rect r = new Rect(0, 0, card.getWidth(), card.getHeight());
+                root.offsetDescendantRectToMyCoords(card, r);
+                showWatchRow(r.bottom);
+            }
+        });
+        grid.requestLayout();
+    }
+
+    /** Down from an app: the card focus was last on in Continue watching; false when there are none. */
+    private boolean focusWatching() {
+        if (!continueWatchingRow || watchRow.getVisibility() != View.VISIBLE || watchAdapter.getItemCount() == 0) {
+            return false;
+        }
+        int pos = Math.max(0, Math.min(watchIndex, watchAdapter.getItemCount() - 1));
+        RecyclerView.ViewHolder vh = watchRow.findViewHolderForAdapterPosition(pos);
+        if (vh != null) {
+            vh.itemView.requestFocus();
+            return true;
+        }
+        watchRow.scrollToPosition(pos);
+        watchRow.post(() -> {
+            RecyclerView.ViewHolder h = watchRow.findViewHolderForAdapterPosition(pos);
+            if (h != null) h.itemView.requestFocus();
+        });
+        return true;
+    }
+
+    /** A card has focus: its title and episode on the shelf, its picture behind the screen. */
+    private void showWatchHero(LatestShows.Watching item) {
+        stopRecoRotation();
+        recoDots.setVisibility(View.INVISIBLE);   // its room kept: the title doesn't jump between cards and apps
+        showGist(false);
+        StringBuilder m = new StringBuilder();
+        if (item.subtitle != null && !item.subtitle.isEmpty()) m.append(item.subtitle);
+        String app = appLabel(item.pkg);
+        if (!app.isEmpty()) m.append(m.length() > 0 ? "  ·  " : "").append(app);
+        if (item.progress > 0) {
+            m.append(m.length() > 0 ? "  ·  " : "").append(Math.round(item.progress * 100)).append("% watched");
+        }
+        swapText(() -> {
+            setHeroTitle(item.title);
+            heroShow.setText(m);
+            heroShow.setVisibility(View.VISIBLE);
+        });
+        if (!heroShown || hero.getAlpha() < 1f) hero.animate().alpha(1f).setDuration(200).start();
+        heroShown = true;
+        anchorHero();
+        String key = "w#" + item.id;
+        if (key.equals(showArtKey)) return;
+        showArtKey = key;
+        latest.watchingBackdrop(item, (w, bitmap) -> swapArt(key, bitmap, 0));
+    }
+
+    /** OK on a card: the app's own link for that title, which resumes it (an intent: URI or the app's https link). */
+    private void openWatching(LatestShows.Watching item) {
+        Intent open = null;
+        if (item.intentUri != null) {
+            try {
+                open = Intent.parseUri(item.intentUri, Intent.URI_INTENT_SCHEME);
+                if (open.getPackage() == null && open.getComponent() == null) open.setPackage(item.pkg);
+            } catch (java.net.URISyntaxException e) {
+                open = null;
+            }
+        }
+        if (open == null) open = getPackageManager().getLeanbackLaunchIntentForPackage(item.pkg);
+        if (open == null) return;
+        open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            startActivity(open);
+        } catch (ActivityNotFoundException | SecurityException e) {
+            Intent app = getPackageManager().getLeanbackLaunchIntentForPackage(item.pkg);
+            if (app != null) startActivity(app.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        }
+    }
+
+    /** The row's cards: the picture and a progress line, smaller than an app until focused. */
+    private final class WatchAdapter extends RecyclerView.Adapter<WatchAdapter.Holder> {
+        private List<LatestShows.Watching> items = new ArrayList<>();
+
+        final class Holder extends RecyclerView.ViewHolder {
+            final ImageView image;
+            final TextView fallback;
+            final View progress;
+            LatestShows.Watching item;
+
+            Holder(View v) {
+                super(v);
+                image = v.findViewById(R.id.watchImage);
+                fallback = v.findViewById(R.id.watchFallback);
+                progress = v.findViewById(R.id.watchProgress);
+                progress.setBackgroundColor(accent);
+                v.setOutlineProvider(new android.view.ViewOutlineProvider() {
+                    @Override
+                    public void getOutline(View view, android.graphics.Outline outline) {
+                        outline.setRoundRect(0, 0, view.getWidth(), view.getHeight(), 6 * density);
+                    }
+                });
+                v.setClipToOutline(true);
+                v.setAlpha(0.7f);
+                v.setOnFocusChangeListener((view, has) -> {
+                    float s = has ? 1.4f : 1f, a = has ? 1f : 0.7f;   // no outline: size and brightness
+                    if (animations && !reducedMotion) {
+                        view.animate().scaleX(s).scaleY(s).alpha(a).setDuration(150).start();
+                    } else {
+                        view.setScaleX(s);
+                        view.setScaleY(s);
+                        view.setAlpha(a);
+                    }
+                    view.setElevation(has ? 8 * density : 0);
+                    if (has && item != null) {
+                        watchIndex = getBindingAdapterPosition();
+                        showWatchHero(item);
+                    }
+                });
+                v.setOnClickListener(view -> {
+                    if (item == null) return;
+                    resumeToWatch = true;
+                    openWatching(item);
+                });
+                v.setOnLongClickListener(view -> {
+                    int at = getBindingAdapterPosition();
+                    if (item != null) confirmHide(item.title, item.key, () -> refocusWatch = at);
+                    return true;
+                });
+                v.setOnKeyListener((view, keyCode, event) -> {
+                    if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                    int pos = getBindingAdapterPosition();
+                    switch (keyCode) {
+                        case KeyEvent.KEYCODE_DPAD_UP:
+                        case KeyEvent.KEYCODE_BACK:
+                            focusTile(lastFocused);   // back up to the apps
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_DOWN:
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_LEFT:
+                            if (pos > 0) return false;
+                            railHome.requestFocus();
+                            return true;
+                        case KeyEvent.KEYCODE_DPAD_RIGHT:
+                            return pos >= getItemCount() - 1;
+                        default:
+                            return false;
+                    }
+                });
+            }
+        }
+
+        /** The same cards in the same order: nothing to redraw, and the row keeps its scroll. */
+        boolean same(List<LatestShows.Watching> list) {
+            if (list.size() != items.size()) return false;
+            for (int i = 0; i < list.size(); i++) {
+                LatestShows.Watching a = list.get(i), b = items.get(i);
+                if (a.id != b.id || a.progress != b.progress) return false;
+            }
+            return true;
+        }
+
+        void setItems(List<LatestShows.Watching> list) {
+            items = new ArrayList<>(list);
+            notifyDataSetChanged();
+        }
+
+        @Override
+        public Holder onCreateViewHolder(ViewGroup parent, int viewType) {
+            return new Holder(getLayoutInflater().inflate(R.layout.item_watch, parent, false));
+        }
+
+        @Override
+        public void onBindViewHolder(Holder h, int position) {
+            LatestShows.Watching item = items.get(position);
+            h.item = item;
+            // Picture only on screen; the title is for TalkBack.
+            h.itemView.setContentDescription(item.subtitle == null || item.subtitle.isEmpty()
+                    ? item.title : item.title + ", " + item.subtitle);
+            ViewGroup.LayoutParams lp = h.progress.getLayoutParams();
+            lp.width = item.progress > 0 ? Math.max(1, Math.round(96 * density * item.progress)) : 0;
+            h.progress.setLayoutParams(lp);
+            h.image.setImageDrawable(null);
+            // No picture (yet, or the app gave none): the title, so the card is never an empty box.
+            h.fallback.setText(item.title);
+            h.fallback.setVisibility(View.VISIBLE);
+            latest.watchingImage(item, (w, bitmap) -> {
+                if (h.item != w) return;
+                h.image.setImageBitmap(bitmap);
+                h.fallback.setVisibility(View.GONE);
+            });
+        }
+
+        @Override
+        public int getItemCount() {
+            return items.size();
+        }
+    }
+
     private void hideHero() {
         if (!heroShown) return;
+        fadeLatest(0f, 300);
+        stopRecoRotation();
         stopAmbientAnimation();
         hero.animate().cancel();
         ambient.animate().cancel();
         heroArt.animate().cancel();
         heroShown = false;
+        recoDots.setVisibility(View.INVISIBLE);   // local addition: the dots go with the shelf
         if (animations && !reducedMotion) {
             hero.animate().alpha(0f).setDuration(160).start();
             if (ambientGlow) ambient.animate().alpha(0f).setDuration(300).start();
@@ -2425,15 +3607,27 @@ public class MainActivity extends Activity implements AppAdapter.TileListener {
         if (singleRow) {
             // One row: Up leaves for the top bar, Down has nowhere to go, and Left/Right walk the whole row,
             // stopping at its two ends (the default focus search scrolls the row to the next tile).
-            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) return false;
-            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return true;
+            // Local addition: Up steps into the background (its titles), when the app has any.
+            if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+                topFromGist = false;
+                if (!focusRecoStage()) firstTopButton().requestFocus();
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                focusWatching();
+                return true;
+            }
             boolean forward = rtlAppGrid ? keyCode == KeyEvent.KEYCODE_DPAD_LEFT : keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
             int last = adapter.focusablePosition(count - 1);
             if (forward && position >= last) {
                 if (adapter.isLibraryAt(count)) focusLibrary();
                 return true;
             }
-            return !forward && position == 0;
+            if (!forward && position == 0) {
+                railHome.requestFocus();   // local addition: Left from the first app opens the rail
+                return true;
+            }
+            return false;
         }
         // Horizontal: swallow the key at a row's ends so focus never wraps to the next row or
         // escapes up into the top bar. Mid-row moves fall through to the default focus search.
